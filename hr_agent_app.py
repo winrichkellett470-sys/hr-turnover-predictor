@@ -21,7 +21,26 @@ import matplotlib.pyplot as plt
 import matplotlib
 
 # 中文字体
-matplotlib.rcParams['font.sans-serif'] = ['SimHei', 'Microsoft YaHei', 'Arial Unicode MS']
+# 加载中文字体（本地和云端都适配）
+import matplotlib.font_manager as fm
+
+font_candidates = [
+    'NotoSansCJKsc-Regular.otf',   # 仓库内的字体（云端用）
+    'NotoSansSC-Regular.ttf',      # 备用字体名
+]
+zh_font = None
+for font_file in font_candidates:
+    if os.path.exists(font_file):
+        fm.fontManager.addfont(font_file)
+        zh_font = fm.FontProperties(fname=font_file).get_name()
+        break
+
+if zh_font:
+    # 云端加载成功
+    matplotlib.rcParams['font.sans-serif'] = [zh_font, 'SimHei', 'Microsoft YaHei']
+else:
+    # 本地回退：用系统字体
+    matplotlib.rcParams['font.sans-serif'] = ['SimHei', 'Microsoft YaHei', 'Arial Unicode MS']
 matplotlib.rcParams['axes.unicode_minus'] = False
 
 
