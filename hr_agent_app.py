@@ -36,18 +36,33 @@ st.set_page_config(
 
 
 # ==============================================================
-# 模型加载（带缓存，只加载一次）
+# 模型加载（带缓存，只加载一次；云端首次运行会自动训练）
 # ==============================================================
 @st.cache_resource
 def load_artifacts():
     required = ['champion_model.pkl', 'scaler.pkl', 'feature_info.pkl']
     missing = [f for f in required if not os.path.exists(f)]
+
+    # 本地没有模型文件 → 自动触发一次训练（部署到云端的必经路径）
     if missing:
-        st.error(
-            f"❌ 找不到模型文件: {missing}\n\n"
-            "请先在终端运行 `python train_model.py` 生成模型。"
-        )
-        st.stop()
+        if not os.path.exists('HR.csv'):
+            st.error(
+                "❌ 找不到 HR.csv 数据文件，无法训练模型。\n\n"
+                "请确保 HR.csv 与 hr_agent_app.py 在同一目录下。"
+            )
+            st.stop()
+
+        with st.spinner("⚙️ 首次启动，正在训练 Stacking 模型... 约 1-3 分钟，请耐心等待"):
+            import subprocess
+            import sys
+            result = subprocess.run(
+                [sys.executable, 'train_model.py'],
+                capture_output=True, text=True
+            )
+            if result.returncode != 0:
+                st.error(f"训练失败：\n{result.stderr}")
+                st.stop()
+        st.success("✅ 模型训练完成！即将进入应用...")
 
     with open('champion_model.pkl', 'rb') as f:
         model = pickle.load(f)
@@ -293,9 +308,9 @@ def analyze_risk_factors(raw: dict, prob: float) -> list:
 
 def risk_level(prob: float) -> tuple:
     """根据概率划分风险等级，返回 (等级, 颜色, emoji)"""
-    if prob >= 0.6:
+    if prob >= 0.5:
         return ("高风险", "#D7263D", "🔴")
-    elif prob >= 0.3:
+    elif prob >= 0.2:
         return ("中风险", "#F6AE2D", "🟡")
     else:
         return ("低风险", "#2A9D8F", "🟢")
@@ -304,7 +319,7 @@ def risk_level(prob: float) -> tuple:
 def generate_recommendation(prob: float, talent: dict, factors: list) -> str:
     """根据预测结果生成管理建议"""
     is_valuable = talent['level'] in ("核心人才", "骨干员工")
-    high_risk = prob >= 0.6
+    high_risk = prob >= 0.5
 
     if high_risk and is_valuable:
         return (
@@ -349,36 +364,91 @@ def generate_recommendation(prob: float, talent: dict, factors: list) -> str:
 st.sidebar.title("📋 员工信息录入")
 st.sidebar.markdown("请填写该员工的各项指标，右侧将实时给出分析结果。")
 
+# —— 一键载入典型画像 ——
+st.sidebar.markdown("#### ⚡ 快速测试（可选）")
+st.sidebar.caption("点击下方按钮，一键载入典型员工画像：")
+
+PRESET_PROFILES = {
+    '边缘化的冷淡者': {
+        'satisfaction': 0.10, 'evaluation': 0.50,
+        'projects': 2, 'hours': 140, 'tenure': 3,
+        'department': 'sales', 'salary': 'low',
+        'accident': False, 'promoted': False,
+    },
+    '过载的疲惫者': {
+        'satisfaction': 0.40, 'evaluation': 0.85,
+        'projects': 6, 'hours': 280, 'tenure': 4,
+        'department': 'technical', 'salary': 'medium',
+        'accident': False, 'promoted': False,
+    },
+    '被挖角的明星': {
+        'satisfaction': 0.80, 'evaluation': 0.92,
+        'projects': 5, 'hours': 240, 'tenure': 5,
+        'department': 'technical', 'salary': 'low',
+        'accident': False, 'promoted': False,
+    },
+    '健康的核心员工': {
+        'satisfaction': 0.75, 'evaluation': 0.85,
+        'projects': 4, 'hours': 210, 'tenure': 5,
+        'department': 'technical', 'salary': 'high',
+        'accident': False, 'promoted': True,
+    },
+}
+
+preset_cols = st.sidebar.columns(2)
+for i, (name, profile) in enumerate(PRESET_PROFILES.items()):
+    col = preset_cols[i % 2]
+    if col.button(name, use_container_width=True, key=f'preset_{i}'):
+        for k, v in profile.items():
+            st.session_state[f'input_{k}'] = v
+        st.rerun()
+
+st.sidebar.markdown("---")
 st.sidebar.markdown("#### 主观评价维度")
 satisfaction = st.sidebar.slider(
-    "工作满意度", 0.0, 1.0, 0.60, 0.01,
+    "工作满意度", 0.0, 1.0,
+    st.session_state.get('input_satisfaction', 0.60), 0.01,
     help="来自员工自评问卷，0 = 非常不满意，1 = 非常满意"
 )
 evaluation = st.sidebar.slider(
-    "最新绩效评估", 0.0, 1.0, 0.75, 0.01,
+    "最新绩效评估", 0.0, 1.0,
+    st.session_state.get('input_evaluation', 0.75), 0.01,
     help="来自上级主管打分，0 = 很差，1 = 优秀"
 )
 
 st.sidebar.markdown("#### 工作负荷维度")
 projects = st.sidebar.select_slider(
-    "参与项目数", options=list(range(2, 8)), value=4,
+    "参与项目数", options=list(range(2, 8)),
+    value=st.session_state.get('input_projects', 4),
     help="当前正在进行或近期参与的项目数"
 )
 hours = st.sidebar.slider(
-    "月均工作时长（小时）", 90, 320, 200, 1,
+    "月均工作时长（小时）", 90, 320,
+    st.session_state.get('input_hours', 200), 1,
     help="过去三个月平均每月工作小时数"
 )
 
 st.sidebar.markdown("#### 组织归属维度")
 tenure = st.sidebar.select_slider(
-    "在职年数", options=list(range(2, 11)), value=3,
+    "在职年数", options=list(range(2, 11)),
+    value=st.session_state.get('input_tenure', 3),
 )
-department = st.sidebar.selectbox("所属部门", DEPARTMENTS, index=DEPARTMENTS.index('sales') if 'sales' in DEPARTMENTS else 0)
-salary = st.sidebar.selectbox("薪资水平", SALARY_LEVELS, index=0)
+_dep_default = st.session_state.get('input_department',
+                                     'sales' if 'sales' in DEPARTMENTS else DEPARTMENTS[0])
+department = st.sidebar.selectbox(
+    "所属部门", DEPARTMENTS,
+    index=DEPARTMENTS.index(_dep_default) if _dep_default in DEPARTMENTS else 0
+)
+salary = st.sidebar.selectbox(
+    "薪资水平", SALARY_LEVELS,
+    index=SALARY_LEVELS.index(st.session_state.get('input_salary', 'low'))
+)
 
 st.sidebar.markdown("#### 事件维度")
-accident = st.sidebar.checkbox("过去发生过工作事故")
-promoted = st.sidebar.checkbox("过去 5 年内获得过晋升")
+accident = st.sidebar.checkbox("过去发生过工作事故",
+                                value=st.session_state.get('input_accident', False))
+promoted = st.sidebar.checkbox("过去 5 年内获得过晋升",
+                                value=st.session_state.get('input_promoted', False))
 
 predict_btn = st.sidebar.button("🔍 分析该员工", type="primary", use_container_width=True)
 
@@ -468,7 +538,7 @@ with col2:
 
 with col3:
     st.markdown("##### 人才-风险象限定位")
-    q_high_risk = prob >= 0.6
+    q_high_risk = prob >= 0.5
     q_valuable = talent['level'] in ('核心人才', '骨干员工')
     if q_high_risk and q_valuable:
         q = "🚨 高价值 + 高风险（紧急挽留）"; qcolor = "#D7263D"
